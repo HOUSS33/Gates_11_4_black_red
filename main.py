@@ -16,6 +16,24 @@ RED/BLACK "streak de répétition" (PAS chaos) :
 - Bust = perte des 4 paliers d'affilée -> recharge automatique du capital.
 - ALERTE PRÉCOCE : notification Telegram dès que le streak atteint 10/11,
   une ligne avant le vrai signal — purement informative, aucune mise engagée.
+
+--------------------------------------------------------------------------------------
+FIX (voir échange) :
+  on_open() envoyait le message "Bot démarré" à CHAQUE reconnexion WebSocket,
+  pas seulement au vrai démarrage du process. Un drop de connexion (fréquent
+  sur ces flux WS de casino live) déclenchait donc un faux message "démarré"
+  sur Telegram, qui ressemblait à un redémarrage Railway alors que ce n'en
+  était pas un.
+
+  Correctif :
+    1. Un flag global `_first_connection` distingue le tout premier `on_open`
+       (vrai démarrage du process) des reconnexions suivantes.
+    2. Les reconnexions sont seulement loguées en console (avec un compteur),
+       PAS envoyées sur Telegram, pour éviter de spammer le téléphone à
+       chaque coupure WS mineure.
+    3. Un compteur `_reconnect_count` permet de voir en un coup d'œil combien
+       de fois la connexion a sauté depuis le démarrage du process.
+--------------------------------------------------------------------------------------
 ========================================================================================
 """
 
@@ -391,13 +409,30 @@ def on_close(ws, close_status_code, close_msg):
     print(f"[WS] Connexion fermée (code={close_status_code}, msg={close_msg}). Reconnexion dans 3s...")
 
 
+# --------------------------------------------------------------------------
+# FIX : distinguer le vrai démarrage du process d'une simple reconnexion WS.
+# --------------------------------------------------------------------------
+_first_connection = True
+_reconnect_count = 0
+
+
 def on_open(ws):
+    global _first_connection, _reconnect_count
+
     print("[WS] Connexion établie.")
-    send_telegram_alert(
-        f"🎲 Bot RED/BLACK démarré (WebSocket). Capital : {engine.initial_capital} DHS, "
-        f"seuil : {engine.chaos_threshold}, paliers : {engine.bet_ladder}.\n"
-        f"Telegram : silencieux jusqu'au prochain BUST, puis relaie les 2 signaux suivants."
-    )
+
+    if _first_connection:
+        send_telegram_alert(
+            f"🎲 Bot RED/BLACK démarré (WebSocket). Capital : {engine.initial_capital} DHS, "
+            f"seuil : {engine.chaos_threshold}, paliers : {engine.bet_ladder}.\n"
+            f"Telegram : silencieux jusqu'au prochain BUST, puis relaie les 2 signaux suivants."
+        )
+        _first_connection = False
+    else:
+        _reconnect_count += 1
+        # Reconnexion normale (drop WS courant sur ce type de flux) :
+        # on log en console mais on NE spamme PAS Telegram à chaque coupure.
+        print(f"[WS] Reconnexion #{_reconnect_count} effectuée (pas un redémarrage du process).")
 
     msg1 = json.dumps({"type": "available", "casinoId": CASINO_ID})
     ws.send(msg1)
